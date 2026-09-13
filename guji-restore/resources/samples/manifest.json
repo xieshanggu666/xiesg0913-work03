@@ -1,0 +1,30 @@
+{
+  "format": "guji-samples/1",
+  "pages": [
+    {
+      "file": "sample-1.png",
+      "name": "卷首序",
+      "damage": [
+        "watermark"
+      ]
+    },
+    {
+      "file": "sample-2.png",
+      "name": "卷一·第二叶",
+      "damage": [
+        "mildew"
+      ]
+    },
+    {
+      "file": "sample-3.png",
+      "name": "卷一·第三叶（虫蛀）",
+      "damage": [
+        "wormhole",
+        "tear",
+        "foxing"
+      ],
+      "after": "sample-3-after.png"
+    }
+  ],
+  "note": "仿真样例，非真实古籍；虫孔/撕裂坐标与应用内示例标注对应。"
+}

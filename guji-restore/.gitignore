@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist-electron/
+.tsbuild/
+release/
+coverage/
+test-tmp/
+*.log
+.DS_Store
+test-results/
+playwright-report/

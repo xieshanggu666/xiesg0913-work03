@@ -1,0 +1,81 @@
+{
+  "name": "guji-restore",
+  "productName": "古籍修复工作台",
+  "version": "0.1.0",
+  "description": "离线古籍修复辅助桌面工具：高清扫描分层标注、纸墨样本库、修补材料推荐、修复步骤记录、前后对比与修复档案导出",
+  "main": "dist-electron/main.cjs",
+  "private": true,
+  "type": "module",
+  "author": "古籍修复工具项目",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --config vite.config.ts",
+    "build": "vite build && node scripts/build-electron.mjs",
+    "start": "electron .",
+    "rebuild": "electron-rebuild -f -w better-sqlite3,sharp",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "samples": "node scripts/gen-samples.mjs",
+    "dist": "npm run build && electron-builder",
+    "dist:dir": "npm run build && electron-builder --dir"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^11.3.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "@playwright/test": "^1.48.2",
+    "@sveltejs/vite-plugin-svelte": "^3.1.2",
+    "@types/adm-zip": "^0.5.5",
+    "@types/archiver": "^6.0.2",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.16.11",
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.21.5",
+    "jsdom": "^25.0.1",
+    "konva": "^9.3.16",
+    "svelte": "^4.2.19",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.5"
+  },
+  "build": {
+    "appId": "org.guji.restore",
+    "productName": "GujiRestore",
+    "files": [
+      "dist-electron/**",
+      "out/renderer/**",
+      "resources/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**",
+      "node_modules/sharp/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/samples",
+        "to": "samples"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": ["AppImage", "dir"],
+      "category": "Graphics"
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "mac": {
+      "target": ["dir"]
+    }
+  }
+}
