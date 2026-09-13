@@ -57,10 +57,12 @@ export interface ExportFolioSummary {
   stepCount: number;
   /** 原始 sha256 与实测字节是否一致（未知时为 null，例如浏览器 Mock 无文件访问） */
   originalMatched: boolean | null;
-  /** 当前图层/标注方案是否已另存为版本（与任一版本快照一致；存版后再改动则为 false） */
+  /** 当前图层/标注方案是否已另存为版本（与任一人工版本快照一致；存版后再改动则为 false） */
   planSaved: boolean;
   /** 是否曾经人工存过版（仅用于区分“从未存版”与“存版后又改动”两种文案） */
   hasManualVersion: boolean;
+  /** 破损/修补标注数（不含批注层） */
+  planShapeCount: number;
 }
 
 export interface ExportPreview {
@@ -140,6 +142,8 @@ export function buildExportPreview(input: ExportPreviewInput): ExportPreview {
   const folioSummaries: ExportFolioSummary[] = sortedFolios.map((f) => {
     const fLayers = input.layers.filter((l) => l.folio_id === f.id);
     const fShapes = input.shapes.filter((s) => s.folio_id === f.id);
+    const damageCount = fShapes.filter((s) => layerKind.get(s.layer_id) === 'damage').length;
+    const repairCount = fShapes.filter((s) => layerKind.get(s.layer_id) === 'repair').length;
     const fVersions = versionsOf(f.id);
     return {
       folio_id: f.id,
@@ -148,12 +152,13 @@ export function buildExportPreview(input: ExportPreviewInput): ExportPreview {
       hasOriginal: exists(f.original_rel) ?? true,
       hasAfter: !!f.after_rel && exists(f.after_rel) !== false,
       hasThumb: exists(f.thumb_rel) ?? true,
-      damageCount: fShapes.filter((s) => layerKind.get(s.layer_id) === 'damage').length,
-      repairCount: fShapes.filter((s) => layerKind.get(s.layer_id) === 'repair').length,
+      damageCount,
+      repairCount,
       stepCount: stepsOf(f.id).length,
       originalMatched: input.checksumMatched ? (input.checksumMatched.get(f.id) ?? false) : null,
       planSaved: currentPlanIsSaved({ layers: fLayers, shapes: fShapes }, fVersions),
-      hasManualVersion: fVersions.some((v) => v.author !== 'system')
+      hasManualVersion: fVersions.some((v) => v.author !== 'system'),
+      planShapeCount: damageCount + repairCount
     };
   });
 
@@ -195,15 +200,23 @@ export function buildExportPreview(input: ExportPreviewInput): ExportPreview {
         folio_id: f.folio_id
       });
     }
-    // 未保存方案：当前图层/标注与任何已存版本快照都不一致（存版后又改动也算未保存）
-    if ((f.damageCount > 0 || f.repairCount > 0) && !f.planSaved) {
-      const suffix = f.hasManualVersion
-        ? '最近一次存版后已有改动，归档后无法回退到当前方案。'
-        : '尚未另存版本，归档后无法回退到本方案。';
+    // 未保存方案：当前状态与任何人工版本快照都不一致。
+    // 注意不能以“当前还有标注”为前提——存版后把标注全部删除同样是未保存的改动；
+    // 仅当“从未人工存版且当前也没有任何标注”（刚导入、尚未开工）时才不提示。
+    const pristine = !f.hasManualVersion && f.planShapeCount === 0;
+    if (!pristine && !f.planSaved) {
+      let suffix: string;
+      if (f.hasManualVersion && f.planShapeCount === 0) {
+        suffix = '存版后的标注已被全部删除且未再存版，归档将丢失可回退的方案记录。';
+      } else if (f.hasManualVersion) {
+        suffix = '最近一次存版后已有改动，归档后无法回退到当前方案。';
+      } else {
+        suffix = '尚未另存版本，归档后无法回退到本方案。';
+      }
       risks.push({
         code: 'plan-not-versioned',
         title: '修补方案未保存版本',
-        detail: `「${f.name}」当前有 ${f.damageCount + f.repairCount} 处标注/方案，${suffix}`,
+        detail: `「${f.name}」${suffix}`,
         folio_id: f.folio_id
       });
     }

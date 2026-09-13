@@ -252,6 +252,19 @@ describe('项目进度与风险看板', () => {
     expect(r.risks.filter((x) => x.code === 'plan-not-versioned' && x.folio_id === 'f1')).toHaveLength(0);
   });
 
+  it('回归：存版后把某叶标注全部删除 → 仍须提示方案未存版', () => {
+    const input = fixture();
+    // f1 有人工存版（快照含 s1/s2/s3），随后标注被全部删除：空状态只与 system 基线一致
+    input.shapes = input.shapes.filter((s) => s.folio_id !== 'f1');
+    const r = buildDashboard(input);
+    const hit = r.risks.find((x) => x.code === 'plan-not-versioned' && x.folio_id === 'f1');
+    expect(hit).toBeTruthy();
+    expect(hit!.detail).toContain('全部删除');
+
+    // 对“从未人工存版且无标注”的 f3 仍不提示（刚导入、尚未开工）
+    expect(r.risks.some((x) => x.code === 'plan-not-versioned' && x.folio_id === 'f3')).toBe(false);
+  });
+
   it('回归：对照图不能跳过前置流程（阶段必须连续推进）', () => {
     const base: DashboardInput = {
       project,

@@ -63,8 +63,10 @@ export interface FolioProgress {
   stepCount: number;
   hasAfter: boolean;
   damagedAreaPx: number;
-  /** 当前方案是否已存版（与任一版本快照一致；存版后再改动则为 false） */
+  /** 当前方案是否已存版（与任一人工版本快照一致；存版后再改动则为 false） */
   planSaved: boolean;
+  /** 是否曾经人工存过版（用于区分“从未存版”与“存版后又改动”） */
+  hasManualVersion: boolean;
 }
 
 export interface DashboardTotals {
@@ -156,7 +158,8 @@ export function buildDashboard(input: DashboardInput): DashboardReport {
         planSaved: currentPlanIsSaved(
           { layers: input.layers.filter((l) => l.folio_id === f.id), shapes: allShapes },
           versionsOf(f.id)
-        )
+        ),
+        hasManualVersion: versionsOf(f.id).some((v) => v.author !== 'system')
       };
     });
 
@@ -252,17 +255,23 @@ export function buildDashboard(input: DashboardInput): DashboardReport {
         folio_id: fp.folio_id
       });
     }
-    // 当前方案与任一版本快照不一致才提示：不能只看“曾人工存版”，
-    // 存版之后的改动必须重新存版，否则旧版本不代表当前方案。
-    if ((fp.damageCount > 0 || fp.repairCount > 0) && !fp.planSaved) {
-      const everSaved = versionsOf(fp.folio_id).some((v) => v.author !== 'system');
+    // 当前方案与任一人工版本快照不一致才提示：
+    //  - 不能只看“曾人工存版”：存版之后的改动（含把标注全部删除）必须重新存版；
+    //  - 也不能以“当前还有标注”为前提，否则删除全部标注后会漏报；
+    //  - 但“从未人工存版且当前没有任何标注”（刚导入、尚未开工）不提示。
+    const pristinePlan = !fp.hasManualVersion && fp.damageCount === 0 && fp.repairCount === 0;
+    if (!pristinePlan && !fp.planSaved) {
+      const detail =
+        fp.hasManualVersion && fp.damageCount === 0 && fp.repairCount === 0
+          ? `「${fp.name}」存版后的标注已被全部删除且未再存版，误操作将不可回退。`
+          : fp.hasManualVersion
+            ? `「${fp.name}」最近一次存版后方案又有改动，当前状态尚未另存版本，误操作将不可回退。`
+            : `「${fp.name}」的标注方案尚未另存版本，误操作将不可回退。`;
       risks.push({
         level: 'low',
         code: 'plan-not-versioned',
         title: '方案未存版',
-        detail: everSaved
-          ? `「${fp.name}」最近一次存版后方案又有改动，当前状态尚未另存版本，误操作将不可回退。`
-          : `「${fp.name}」的标注方案尚未另存版本，误操作将不可回退。`,
+        detail,
         folio_id: fp.folio_id
       });
     }

@@ -294,6 +294,17 @@ describe('主进程工作流（SQLite + sharp + zip）', () => {
     expect(planRisk).toBeTruthy();
     expect(planRisk.detail).toContain('存版后');
 
+    // 1c) 把标注全部删除：空状态虽与 system 基线一致，但人工版本里没有空快照 → 仍须提示
+    for (const shp of s.listShapes(ctx, folio.id)) s.removeShape(ctx, shp.id);
+    const emptiedPreview = s.previewExport(ctx, project.id, { includeOriginal: true });
+    const emptiedRisk = emptiedPreview.risks.find((r) => r.code === 'plan-not-versioned')!;
+    expect(emptiedRisk).toBeTruthy();
+    expect(emptiedRisk.detail).toContain('全部删除');
+    // 重新存一个空方案版本后解除（当前空状态与该人工快照一致）
+    s.saveVersion(ctx, folio.id, { label: '清空确认', note: '', author: '修复员' });
+    const reSavedPreview = s.previewExport(ctx, project.id, { includeOriginal: true });
+    expect(reSavedPreview.risks.map((r) => r.code)).not.toContain('plan-not-versioned');
+
     // 2) 导出成功 → 留痕：时间/操作人/文件名/校验摘要
     const zipPath = join(root, 'pv.zip');
     const r = s.exportProjectArchive(ctx, project.id, {

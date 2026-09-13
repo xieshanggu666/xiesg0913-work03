@@ -256,6 +256,33 @@ describe('导出预览 buildExportPreview', () => {
     expect(p.folios[0].planSaved).toBe(true);
   });
 
+  it('回归：存版后把标注全部删除 → 仍须提示方案未保存（不能因空状态匹配 system 基线而漏报）', () => {
+    const f1 = folio('fol_1', 1, true);
+    const fLayers = layersFor(f1.id);
+    // 人工版本快照里有 s1；当前标注被全部删除（空状态仅与 system 基线一致）
+    const saved: PlanVersion = {
+      ...baselineVersion(f1.id),
+      id: 'v2',
+      version: 2,
+      author: '修复师',
+      snapshot: { layers: fLayers, shapes: [shape('s1', f1.id, 'damage')] }
+    };
+    const p = buildExportPreview(base({ folios: [f1], layers: fLayers, shapes: [], versions: [baselineVersion(f1.id), saved] }));
+    const risk = p.risks.find((r) => r.code === 'plan-not-versioned');
+    expect(risk).toBeTruthy();
+    expect(risk!.detail).toContain('全部删除');
+    expect(p.folios[0].planSaved).toBe(false);
+    expect(p.folios[0].hasManualVersion).toBe(true);
+    expect(p.checklist.find((c) => c.code === 'plan-versions')!.status).toBe('warn');
+  });
+
+  it('从未人工存版且当前无标注（刚导入的空叶）→ 不提示未保存', () => {
+    const p = buildExportPreview(base());
+    expect(p.risks.filter((r) => r.code === 'plan-not-versioned')).toHaveLength(0);
+    expect(p.folios[0].planSaved).toBe(false);
+    expect(p.checklist.find((c) => c.code === 'plan-versions')!.status).toBe('pass');
+  });
+
   it('没有人工存版但也没有标注 → 不提示未存版', () => {
     const p = buildExportPreview(base());
     expect(p.risks.filter((r) => r.code === 'plan-not-versioned')).toHaveLength(0);
