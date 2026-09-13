@@ -1,7 +1,9 @@
 import type { DashboardReport } from './dashboard.js';
+import type { ExportPreview } from './export-preview.js';
 import type {
   Comment,
   CommentTarget,
+  ExportRecord,
   ExportResult,
   Folio,
   ID,
@@ -132,8 +134,15 @@ export interface GujiApi {
   };
 
   archive: {
-    /** 生成离线 HTML 档案 + 原图/对照图/校验清单 zip */
-    exportProject(projectId: ID, opts: { includeOriginal: boolean }): Promise<ExportResult>;
+    /** 生成档案前的预览：汇总信息、风险、前后对比图与校验清单（不落库） */
+    preview(projectId: ID, opts: { includeOriginal: boolean }): Promise<ExportPreview>;
+    /** 用户确认预览后生成离线 HTML 档案 + 原图/对照图/校验清单 zip */
+    exportProject(
+      projectId: ID,
+      opts: { includeOriginal: boolean; operator?: string }
+    ): Promise<ExportResult>;
+    /** 历次导出尝试记录（成功/失败，最近在前） */
+    records(projectId: ID): Promise<ExportRecord[]>;
   };
 
   dashboard: {

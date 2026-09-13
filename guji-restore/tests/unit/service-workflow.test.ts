@@ -20,7 +20,14 @@ async function loadServices() {
     import('../../electron/services/images'),
     import('../../electron/services/archive')
   ]);
-  return { ...svcMod, ...imgMod, exportProjectArchive: archMod.exportProjectArchive };
+  return {
+    ...svcMod,
+    ...imgMod,
+    exportProjectArchive: archMod.exportProjectArchive,
+    previewExport: archMod.previewExport,
+    recordExportFailure: archMod.recordExportFailure,
+    listExportRecords: archMod.listExportRecords
+  };
 }
 
 async function makeTestImage(path: string, color = '#e8d9b8') {
@@ -151,8 +158,20 @@ describe('主进程工作流（SQLite + sharp + zip）', () => {
 
     // 7) 导出 zip：文件齐全，HTML/清单/校验；原图 sha256 与入库一致
     const zipPath = join(root, 'a.zip');
-    const result = s.exportProjectArchive(ctx, project.id, { includeOriginal: true, destZip: zipPath });
+    const result = s.exportProjectArchive(ctx, project.id, {
+      includeOriginal: true,
+      destZip: zipPath,
+      operator: '测试员'
+    });
     expect(result.folio_count).toBe(1);
+    expect(result.operator).toBe('测试员');
+    expect(result.exported_at).toBeTruthy();
+    expect(result.record_id).toBeTruthy();
+    // 校验摘要：原图 1/1 一致、修复后图 1 张、manifest 有 hash
+    expect(result.checksum_summary?.original_count).toBe(1);
+    expect(result.checksum_summary?.original_matched).toBe(1);
+    expect(result.checksum_summary?.after_count).toBe(1);
+    expect(result.checksum_summary?.manifest_sha256).toMatch(/^[0-9a-f]{64}$/);
     const zip = new AdmZip(zipPath);
     const names = zip.getEntries().map((e) => e.entryName);
     expect(names).toContain('index.html');
@@ -223,4 +242,106 @@ describe('主进程工作流（SQLite + sharp + zip）', () => {
 
     unlinkSync(zipPath);
   }, 30_000);
+
+  it('导出预览：缺修复后图/未解决批注/未存版标风险，导出留痕，失败保留原因可重导', async () => {
+    const s = await loadServices();
+    const root = mkdtempSync(join(tmpdir(), 'guji-preview-'));
+    const ctx = new s.ServiceContext(root);
+
+    const project = s.createProject(ctx, {
+      name: '预览测试卷', author: '建档员', shelf_no: 'PV-1', era: '清', description: ''
+    });
+    const src = join(root, 'src.png');
+    await makeTestImage(src);
+    const [folio] = await s.importFolios(ctx, project.id, [{ name: 'src.png', srcPath: src }]);
+    const damageLayer = s.listLayers(ctx, folio.id)[0];
+    s.createShape(ctx, folio.id, {
+      layer_id: damageLayer.id, damage: 'wormhole', geometry: { type: 'rect', x: 0, y: 0, w: 10, h: 10 }
+    });
+    s.createStep(ctx, {
+      project_id: project.id, folio_id: folio.id, order_index: 1, title: '干揭',
+      technique: '干揭', material_ids: [], operator: '修复员', performed_at: '2026-09-01',
+      duration_min: 30, photo_rel: null, note: ''
+    });
+    s.createComment(ctx, {
+      project_id: project.id, folio_id: folio.id, target_type: 'shape', author: '复核员', body: '待确认'
+    });
+
+    // 1) 预览：有标注未存版（plan-not-versioned）、有工序无修复后图（missing-after-image）、
+    //    批注未解决（unresolved-comments），但都不是硬性阻断，canExport=true
+    const preview = s.previewExport(ctx, project.id, { includeOriginal: true });
+    const codes = preview.risks.map((r) => r.code).sort();
+    expect(codes).toEqual(['missing-after-image', 'plan-not-versioned', 'unresolved-comments']);
+    expect(preview.canExport).toBe(true);
+    expect(preview.hasWarnings).toBe(true);
+    expect(preview.counts.folios).toBe(1);
+    expect(preview.counts.steps).toBe(1);
+    expect(preview.counts.unresolvedComments).toBe(1);
+    // 文件可读且原图 sha256 一致 → 原图/缩略图清单项均为 pass
+    const orig = preview.checklist.find((c) => c.code === 'original-readonly')!;
+    expect(orig.status).toBe('pass');
+
+    // 2) 导出成功 → 留痕：时间/操作人/文件名/校验摘要
+    const zipPath = join(root, 'pv.zip');
+    const r = s.exportProjectArchive(ctx, project.id, {
+      includeOriginal: false, destZip: zipPath, operator: '导全员'
+    });
+    expect(r.operator).toBe('导全员');
+    const zip = new AdmZip(zipPath);
+    // 不打包原图：zip 内无 original/，但 checksums.txt 仍登记原图 sha256
+    expect(zip.getEntries().some((e) => e.entryName.startsWith('original/'))).toBe(false);
+    const checksums = zip.getEntry('checksums.txt')!.getData().toString('utf8');
+    expect(checksums).toContain(folio.original_rel.replace(/\\/g, '/'));
+    expect(r.checksum_summary?.original_matched).toBe(1);
+    expect(r.checksum_summary?.after_count).toBe(0);
+
+    const records = s.listExportRecords(ctx, project.id);
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('success');
+    expect(records[0].operator).toBe('导全员');
+    expect(records[0].file_name).toBe(zipPath);
+    expect(records[0].checksum_summary?.manifest_sha256).toMatch(/^[0-9a-f]{64}$/);
+    // 预览记录列表随预览带出
+    expect(s.previewExport(ctx, project.id, { includeOriginal: false }).records).toHaveLength(1);
+
+    // 3) 损坏原图副本 → 预览清单 fail 且导出抛错；失败留痕保留可读原因
+    const origAbs = join(ctx.projectDir(project.id), folio.original_rel);
+    // 原图是只读文件，先解除只读再覆写
+    const { chmodSync, writeFileSync } = await import('node:fs');
+    chmodSync(origAbs, 0o644);
+    writeFileSync(origAbs, Buffer.from('tampered-bytes'));
+    const badPreview = s.previewExport(ctx, project.id, { includeOriginal: true });
+    expect(badPreview.checklist.find((c) => c.code === 'original-readonly')!.status).toBe('fail');
+    expect(badPreview.canExport).toBe(false);
+
+    const badZip = join(root, 'bad.zip');
+    expect(() =>
+      s.exportProjectArchive(ctx, project.id, { includeOriginal: true, destZip: badZip, operator: '导全员' })
+    ).toThrow(/sha256/);
+    // 服务层在 IPC 边界记录失败原因（模拟 main.ts 行为）
+    s.recordExportFailure(ctx, project.id, {
+      includeOriginal: true, operator: '导全员', error: '「第1叶」原图 sha256 与入库记录不一致，导出中止（疑似副本被改动）'
+    });
+    const withFailure = s.listExportRecords(ctx, project.id);
+    expect(withFailure).toHaveLength(2);
+    expect(withFailure[0].status).toBe('failed');
+    expect(withFailure[0].error).toContain('sha256');
+    expect(withFailure[0].file_name).toBeNull();
+    expect(withFailure[0].checksum_summary).toBeNull();
+  }, 30_000);
+
+  it('空项目导出被阻止并给出可读原因', async () => {
+    const s = await loadServices();
+    const root = mkdtempSync(join(tmpdir(), 'guji-empty-'));
+    const ctx = new s.ServiceContext(root);
+    const project = s.createProject(ctx, {
+      name: '空卷', author: '', shelf_no: '', era: '', description: ''
+    });
+    const preview = s.previewExport(ctx, project.id, { includeOriginal: true });
+    expect(preview.canExport).toBe(false);
+    expect(preview.checklist.find((c) => c.code === 'folios')!.status).toBe('fail');
+    expect(() =>
+      s.exportProjectArchive(ctx, project.id, { includeOriginal: true, destZip: join(root, 'x.zip') })
+    ).toThrow('没有可归档内容');
+  }, 15_000);
 });

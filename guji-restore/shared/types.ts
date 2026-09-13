@@ -201,9 +201,53 @@ export interface Recommendation {
   color_delta_e: number | null;
 }
 
+/** 校验摘要：导出成功后随导出记录留痕，便于事后核对档案内容 */
+export interface ChecksumSummary {
+  /** checksums.txt 行数（每个被打包/登记的文件一行） */
+  file_count: number;
+  /** 媒体文件数（原图/修复后图/缩略图/工序照片） */
+  media_count: number;
+  /** 原图副本数：无论是否打包原图，都参与 sha256 登记与比对 */
+  original_count: number;
+  /** 修复后对照图数 */
+  after_count: number;
+  /** 原图实测 sha256 与入库 original_checksum 一致的叶数 */
+  original_matched: number;
+  /** manifest.json 自身的 sha256（与 checksums.txt 末行一致） */
+  manifest_sha256: string;
+}
+
 export interface ExportResult {
   zip_path: string;
   bytes: number;
   folio_count: number;
   checksum_manifest: boolean;
+  /** 本次导出写入的记录 ID */
+  record_id?: ID;
+  /** 校验摘要 */
+  checksum_summary?: ChecksumSummary;
+  exported_at?: string;
+  operator?: string;
+}
+
+/** 一次导出尝试的留痕记录（成功或失败都保存，失败可据此重新导出） */
+export interface ExportRecord {
+  id: ID;
+  project_id: ID;
+  status: 'success' | 'failed';
+  /** 用户确认导出时勾选的选项 */
+  include_original: boolean;
+  /** 操作人（取顶栏修复师署名） */
+  operator: string;
+  created_at: string;
+  /** 成功：档案 zip 的绝对路径；失败/取消为 null */
+  file_name: string | null;
+  /** 成功：zip 字节数 */
+  bytes: number | null;
+  /** 成功：叶数 */
+  folio_count: number | null;
+  /** 成功：校验摘要；失败为 null */
+  checksum_summary: ChecksumSummary | null;
+  /** 失败时保留的可读原因；成功为 null */
+  error: string | null;
 }

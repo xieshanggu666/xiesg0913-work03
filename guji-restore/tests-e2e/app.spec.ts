@@ -151,3 +151,58 @@ test('批注：发表并标记解决', async ({ page }) => {
   await row.getByRole('button', { name: '标记解决' }).click();
   await expect(row).toHaveClass(/resolved/);
 });
+
+test('修复档案：导出预览标风险、确认后导出、成功留痕', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.getByRole('button', { name: '载入样例' }).click();
+  await expect(page.getByText('《稼轩长短句》样卷')).toBeVisible({ timeout: 10_000 });
+  await page.getByRole('button', { name: '修复档案' }).click();
+  await expect(page.getByRole('heading', { name: '修复档案导出' })).toBeVisible();
+
+  // 进入导出预览：样例有未解决批注 → 风险区标出三类归档风险中的相关项
+  await page.getByRole('button', { name: /导出预览/ }).click();
+  const dialog = page.locator('.modal.preview');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: /导出预览/ })).toBeVisible();
+  // 汇总计数
+  await expect(dialog.getByText('内容汇总')).toBeVisible();
+  // 样例有未解决批注（unresolved-comments）与未人工存版（plan-not-versioned）→ 对应风险出现
+  await expect(dialog.getByText('存在未解决批注')).toBeVisible();
+  await expect(dialog.getByText('修补方案未保存版本')).toBeVisible();
+  // 校验清单
+  await expect(dialog.getByText('批注全部闭环')).toBeVisible();
+  await expect(dialog.getByText('修复前后对比图')).toBeVisible();
+
+  // 有风险时未勾选确认 → 导出按钮禁用
+  const confirmBtn = dialog.getByRole('button', { name: /确认并生成/ });
+  await expect(confirmBtn).toBeDisabled();
+  await dialog.locator('.ack input').check();
+  await expect(confirmBtn).toBeEnabled();
+  await confirmBtn.click();
+
+  // Mock 直接完成导出：预览关闭，成功面板与记录区显示文件名和校验摘要
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.done')).toContainText('index.html 可离线浏览');
+  const records = page.locator('.records');
+  await expect(records).toBeVisible();
+  await expect(records.locator('li.success')).toHaveCount(1);
+  await expect(records).toContainText('修复档案-mock-');
+  await expect(records).toContainText('原图一致 3/3');
+  await expect(records).toContainText('对照图 1');
+});
+
+test('修复档案：空项目预览给出阻断项，不能导出', async ({ page }) => {
+  await page.getByRole('button', { name: '新建项目' }).first().click();
+  await page.locator('#p-name').fill('无叶档案项目');
+  await page.getByRole('button', { name: '创建' }).click();
+  await page.getByRole('button', { name: '修复档案' }).click();
+  await page.getByRole('button', { name: /导出预览/ }).click();
+  const dialog = page.locator('.modal.preview');
+  await expect(dialog).toBeVisible();
+  // 无扫描叶 → 清单项为阻断，确认按钮禁用
+  const confirmBtn = dialog.getByRole('button', { name: /确认并生成/ });
+  await expect(confirmBtn).toBeDisabled();
+  await expect(dialog.locator('.checklist li.fail').first()).toContainText('扫描叶');
+});

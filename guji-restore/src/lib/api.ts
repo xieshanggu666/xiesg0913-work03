@@ -5,6 +5,7 @@
  */
 import type { GujiApi } from '@shared/protocol';
 import { buildDashboard } from '@shared/dashboard';
+import { buildExportPreview } from '@shared/export-preview';
 
 export const api: GujiApi =
   typeof window !== 'undefined' && window.guji
@@ -43,6 +44,7 @@ function createMockApi(): GujiApi {
   db.steps ||= [];
   db.versions ||= [];
   db.comments ||= [];
+  db.exportRecords ||= [];
   // 上传媒体内容表：rel -> data URL（浏览器拿不到真实文件系统，上传内容随 mock 库持久化）
   db.media ||= {};
 
@@ -175,6 +177,13 @@ function createMockApi(): GujiApi {
           };
           db.folios.push(f);
           db.layers.push(...defaultLayers(f.id));
+          // 与 Electron 端 ensureDefaultLayers 一致：导入即建立 system 空基线版本
+          db.versions.push({
+            id: uid('ver_'), project_id: p.id, folio_id: f.id, version: 1,
+            label: '建档基线', note: '导入扫描时自动建立的空基线', author: 'system',
+            snapshot: { layers: db.layers.filter((l: Row) => l.folio_id === f.id), shapes: [] },
+            created_at: now()
+          });
         });
         const folios = db.folios.filter((f: Row) => f.project_id === p.id);
         const dmgLayer = db.layers.find((l: Row) => l.folio_id === folios[2].id && l.kind === 'damage')!;
@@ -258,7 +267,15 @@ function createMockApi(): GujiApi {
               note: ''
             };
             db.folios.push(f);
-            db.layers.push(...defaultLayers(f.id));
+            const newLayers = defaultLayers(f.id);
+            db.layers.push(...newLayers);
+            // 与 Electron 端一致：导入即建立 system 空基线版本
+            db.versions.push({
+              id: uid('ver_'), project_id: pid, folio_id: f.id, version: 1,
+              label: '建档基线', note: '导入扫描时自动建立的空基线', author: 'system',
+              snapshot: { layers: newLayers, shapes: [] },
+              created_at: now()
+            });
             return f;
           })
         ),
@@ -496,8 +513,81 @@ function createMockApi(): GujiApi {
     },
 
     archive: {
-      exportProject: async () =>
-        asyncify({ zip_path: '(浏览器 Mock 模式不产生真实 zip；Electron 内导出)', bytes: 0, folio_count: 0, checksum_manifest: true })
+      // 与 Electron 端 previewExport 同构：聚合内存库后走共享纯函数。
+      // 浏览器无法访问真实文件系统，因此不注入 mediaExists/checksumMatched，
+      // 文件类校验项以 warn 呈现（Electron 端会做真实 sha256 比对并可 fail 阻止导出）。
+      preview: async (pid, _opts) =>
+        asyncify(
+          (() => {
+            const project = db.projects.find((p: Row) => p.id === pid);
+            if (!project) throw new Error(`项目不存在: ${pid}`);
+            const folioIds = new Set(db.folios.filter((f: Row) => f.project_id === pid).map((f: Row) => f.id));
+            return buildExportPreview({
+              project,
+              folios: db.folios.filter((f: Row) => f.project_id === pid),
+              layers: db.layers.filter((l: Row) => folioIds.has(l.folio_id)),
+              shapes: db.shapes.filter((s: Row) => folioIds.has(s.folio_id)),
+              steps: db.steps.filter((s: Row) => s.project_id === pid),
+              comments: db.comments.filter((c: Row) => c.project_id === pid),
+              versions: db.versions.filter((v: Row) => folioIds.has(v.folio_id)),
+              records: db.exportRecords.filter((r: Row) => r.project_id === pid)
+            });
+          })()
+        ),
+      exportProject: async (pid, opts) =>
+        asyncify(
+          (() => {
+            const project = db.projects.find((p: Row) => p.id === pid);
+            if (!project) throw new Error(`项目不存在: ${pid}`);
+            const projectFolios = db.folios.filter((f: Row) => f.project_id === pid);
+            if (projectFolios.length === 0) {
+              // 与 Electron 端一致：空项目是硬性失败，保留可读原因，支持重新导出
+              const rec = {
+                id: uid('exp_'), project_id: pid, status: 'failed',
+                include_original: opts.includeOriginal !== false,
+                operator: opts.operator || '修复师', created_at: now(),
+                file_name: null, bytes: null, folio_count: null, checksum_summary: null,
+                error: '项目尚未导入扫描叶，没有可归档内容'
+              };
+              db.exportRecords.push(rec);
+              throw new Error(rec.error);
+            }
+            const folioCount = projectFolios.length;
+            const fileName = `修复档案-mock-${Date.now()}.zip`;
+            const summary = {
+              file_count: folioCount * 2 + 1,
+              media_count: folioCount * 2,
+              original_count: folioCount,
+              after_count: projectFolios.filter((f: Row) => f.after_rel).length,
+              original_matched: folioCount,
+              manifest_sha256: uid('sha-')
+            };
+            const record = {
+              id: uid('exp_'), project_id: pid, status: 'success',
+              include_original: opts.includeOriginal !== false,
+              operator: opts.operator || project.author || '修复师',
+              created_at: now(), file_name: fileName, bytes: 0, folio_count: folioCount,
+              checksum_summary: summary, error: null
+            };
+            db.exportRecords.push(record);
+            return {
+              zip_path: `(浏览器 Mock：${fileName}；Electron 内产生真实 zip)`,
+              bytes: 0,
+              folio_count: folioCount,
+              checksum_manifest: true,
+              record_id: record.id,
+              checksum_summary: summary,
+              exported_at: record.created_at,
+              operator: record.operator
+            };
+          })()
+        ),
+      records: async (pid) =>
+        asyncify(
+          db.exportRecords
+            .filter((r: Row) => r.project_id === pid)
+            .sort((a: Row, b: Row) => (a.created_at < b.created_at ? 1 : -1))
+        )
     },
 
     dashboard: {

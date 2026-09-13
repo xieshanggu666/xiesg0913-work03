@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import type {
+  ChecksumSummary,
   Comment,
+  ExportRecord,
   Folio,
   LabColor,
   Layer,
@@ -406,4 +408,43 @@ export function replacePlan(db: DB, folioId: string, snapshot: PlanSnapshot): vo
     for (const s of snapshot.shapes) insertShape(db, s);
   });
   tx();
+}
+
+/* ---------------- 导出记录 ---------------- */
+
+export function exportRecordRow(r: any): ExportRecord {
+  return {
+    id: r.id,
+    project_id: r.project_id,
+    status: r.status,
+    include_original: bool(r.include_original),
+    operator: r.operator,
+    created_at: r.created_at,
+    file_name: r.file_name,
+    bytes: r.bytes,
+    folio_count: r.folio_count,
+    checksum_summary: j(r.checksum_json) as ChecksumSummary | null,
+    error: r.error
+  };
+}
+
+/** 导出记录按时间倒序（最近一次在前） */
+export function listExportRecords(db: DB, projectId: string, limit = 20): ExportRecord[] {
+  return db
+    .prepare('SELECT * FROM export_records WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?')
+    .all(projectId, limit)
+    .map(exportRecordRow);
+}
+
+export function insertExportRecord(db: DB, rec: ExportRecord): void {
+  db.prepare(
+    `INSERT INTO export_records (id, project_id, status, include_original, operator, created_at,
+       file_name, bytes, folio_count, checksum_json, error)
+     VALUES (@id,@project_id,@status,@include_original,@operator,@created_at,
+       @file_name,@bytes,@folio_count,@checksum_json,@error)`
+  ).run({
+    ...rec,
+    include_original: rec.include_original ? 1 : 0,
+    checksum_json: rec.checksum_summary ? JSON.stringify(rec.checksum_summary) : null
+  });
 }

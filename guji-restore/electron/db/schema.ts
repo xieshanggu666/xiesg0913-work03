@@ -186,4 +186,19 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_project ON comments(project_id);
+
+CREATE TABLE IF NOT EXISTS export_records (
+  id               TEXT PRIMARY KEY,
+  project_id       TEXT NOT NULL,
+  status           TEXT NOT NULL,            -- success | failed
+  include_original INTEGER NOT NULL DEFAULT 1,
+  operator         TEXT NOT NULL DEFAULT '',
+  created_at       TEXT NOT NULL,
+  file_name        TEXT,                     -- 成功：zip 绝对路径（档案文件名）
+  bytes            INTEGER,
+  folio_count      INTEGER,
+  checksum_json    TEXT,                     -- ChecksumSummary JSON
+  error            TEXT                      -- 失败：可读原因
+);
+CREATE INDEX IF NOT EXISTS idx_exports_project ON export_records(project_id, created_at);
 `;

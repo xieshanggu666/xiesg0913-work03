@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { join, normalize } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 import * as svc from './services/services';
-import { exportProjectArchive } from './services/archive';
+import { exportProjectArchive, previewExport, recordExportFailure, listExportRecords } from './services/archive';
 import { ensureSeeds, importSampleProject } from './services/sample-import';
 
 const isDev = !app.isPackaged;
@@ -149,7 +149,14 @@ function registerIpc(): void {
     'comments.resolve': (id, resolved) => svc.resolveComment(ctx, id, resolved),
     'comments.remove': (id) => svc.removeComment(ctx, id),
 
+    'archive.preview': (projectId, opts) =>
+      previewExport(ctx, projectId, { includeOriginal: opts?.includeOriginal !== false }),
+
+    'archive.records': (projectId) => listExportRecords(ctx, projectId),
+
     'archive.exportProject': async (projectId, opts) => {
+      const includeOriginal = opts?.includeOriginal !== false;
+      const operator = opts?.operator || '修复师';
       const defaultName = `修复档案-${new Date().toISOString().slice(0, 10)}.zip`;
       const destZip =
         dialog.showSaveDialogSync(mainWindow!, {
@@ -157,11 +164,19 @@ function registerIpc(): void {
           defaultPath: join(app.getPath('documents'), defaultName),
           filters: [{ name: 'Zip 档案', extensions: ['zip'] }]
         }) ?? null;
+      // 用户取消：属于主动放弃，不留失败记录
       if (!destZip) throw new Error('已取消导出');
-      return exportProjectArchive(ctx, projectId, {
-        includeOriginal: opts?.includeOriginal !== false,
-        destZip
-      });
+      try {
+        return exportProjectArchive(ctx, projectId, { includeOriginal, destZip, operator });
+      } catch (e) {
+        // 失败留痕：保留可读原因，渲染进程可据此提供“重新导出”
+        recordExportFailure(ctx, projectId, {
+          includeOriginal,
+          operator,
+          error: (e as Error).message || String(e)
+        });
+        throw e;
+      }
     },
 
     'dashboard.get': (projectId) => svc.projectDashboard(ctx, projectId),
