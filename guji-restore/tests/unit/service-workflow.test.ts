@@ -281,6 +281,19 @@ describe('主进程工作流（SQLite + sharp + zip）', () => {
     const orig = preview.checklist.find((c) => c.code === 'original-readonly')!;
     expect(orig.status).toBe('pass');
 
+    // 1b) 存版与当前一致 → plan-not-versioned 解除；之后再改动 → 风险重新出现
+    s.saveVersion(ctx, folio.id, { label: '初勘', note: '', author: '修复员' });
+    const savedPreview = s.previewExport(ctx, project.id, { includeOriginal: true });
+    expect(savedPreview.risks.map((r) => r.code)).not.toContain('plan-not-versioned');
+    const repairLayer = s.listLayers(ctx, folio.id).find((l) => l.kind === 'repair')!;
+    s.createShape(ctx, folio.id, {
+      layer_id: repairLayer.id, damage: 'wormhole', geometry: { type: 'rect', x: 1, y: 1, w: 4, h: 4 }
+    });
+    const changedPreview = s.previewExport(ctx, project.id, { includeOriginal: true });
+    const planRisk = changedPreview.risks.find((r) => r.code === 'plan-not-versioned')!;
+    expect(planRisk).toBeTruthy();
+    expect(planRisk.detail).toContain('存版后');
+
     // 2) 导出成功 → 留痕：时间/操作人/文件名/校验摘要
     const zipPath = join(root, 'pv.zip');
     const r = s.exportProjectArchive(ctx, project.id, {

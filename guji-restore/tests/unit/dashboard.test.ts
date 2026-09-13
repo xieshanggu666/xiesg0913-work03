@@ -101,7 +101,11 @@ function makeComment(id: string, resolved: boolean): Comment {
   };
 }
 
-function makeVersion(folioId: string, author: string): PlanVersion {
+function makeVersion(
+  folioId: string,
+  author: string,
+  snapshot: { layers: Layer[]; shapes: Shape[] } = { layers: [], shapes: [] }
+): PlanVersion {
   return {
     id: `ver_${folioId}_${author}`,
     project_id: project.id,
@@ -110,7 +114,7 @@ function makeVersion(folioId: string, author: string): PlanVersion {
     label: author === 'system' ? '建档基线' : '手工存版',
     note: '',
     author,
-    snapshot: { layers: [], shapes: [] },
+    snapshot,
     created_at: '2026-09-10T08:00:00.000Z'
   };
 }
@@ -128,7 +132,16 @@ function fixture(): DashboardInput {
   ];
   const steps = [makeStep('st1', 'f1'), makeStep('st2', 'f1', { technique: '脱酸', material_ids: [] })];
   const comments = [makeComment('c1', false), makeComment('c2', true)];
-  const versions = [makeVersion('f1', 'system'), makeVersion('f1', '修复师'), makeVersion('f2', 'system')];
+  // f1 的人工版本快照与当前方案一致 → 已存版；f2 只有 system 基线 → 未存版
+  const f1Snapshot = {
+    layers: layers.filter((l) => l.folio_id === 'f1'),
+    shapes: shapes.filter((s) => s.folio_id === 'f1')
+  };
+  const versions = [
+    makeVersion('f1', 'system'),
+    makeVersion('f1', '修复师', f1Snapshot),
+    makeVersion('f2', 'system')
+  ];
   return { project, folios, layers, shapes, steps, comments, versions, now: NOW };
 }
 
@@ -177,7 +190,7 @@ describe('项目进度与风险看板', () => {
     expect(byCode.get('unresolved-comments')?.level).toBe('medium');
     // 1 道工序未登记用材 → 低
     expect(byCode.get('step-without-material')?.level).toBe('low');
-    // f2 有标注但只有 system 基线版 → 方案未存版（低）；f1 有手工版 → 不再对 f1 触发
+    // f2 有标注但只有 system 基线版 → 方案未存版（低）；f1 人工版本快照与当前一致 → 不触发
     expect(byCode.get('plan-not-versioned')?.folio_id).toBe('f2');
     // 排序：高风险在前
     expect(r.risks[0].level).toBe('high');
@@ -200,6 +213,43 @@ describe('项目进度与风险看板', () => {
     input.comments = Array.from({ length: 5 }, (_, i) => makeComment(`c${i}`, false));
     const r = buildDashboard(input);
     expect(r.risks.find((x) => x.code === 'unresolved-comments')?.level).toBe('high');
+  });
+
+  it('回归：曾存版但之后又改动，仍须提示方案未存版', () => {
+    const input = fixture();
+    // f1 的人工版本快照只有 s1：当前还多了 s2/s3（存版后的改动）→ 快照不一致
+    const staleVersion = makeVersion('f1', '修复师', {
+      layers: input.layers.filter((l) => l.folio_id === 'f1'),
+      shapes: [input.shapes.find((s) => s.id === 's1')!]
+    });
+    input.versions = input.versions.filter((v) => !(v.folio_id === 'f1' && v.author === '修复师'));
+    input.versions.push(staleVersion);
+    const r = buildDashboard(input);
+    const hits = r.risks.filter((x) => x.code === 'plan-not-versioned').map((x) => x.folio_id);
+    expect(hits).toContain('f1');
+    expect(hits).toContain('f2');
+
+    // 补存与当前一致的版本后规则对 f1 解除
+    const reSaved = buildDashboard(fixture());
+    expect(
+      reSaved.risks
+        .filter((x) => x.code === 'plan-not-versioned')
+        .map((x) => x.folio_id)
+    ).toEqual(['f2']);
+  });
+
+  it('回退到历史版本后当前与快照一致 → 不提示未存版', () => {
+    const input = fixture();
+    // 假设当前只剩 s1（回退到旧状态），而某历史版本快照正好也是 s1
+    input.shapes = input.shapes.filter((s) => s.id !== 's2' && s.id !== 's3');
+    const old = makeVersion('f1', '修复师', {
+      layers: input.layers.filter((l) => l.folio_id === 'f1'),
+      shapes: input.shapes.filter((s) => s.folio_id === 'f1')
+    });
+    input.versions = input.versions.filter((v) => !(v.folio_id === 'f1' && v.author === '修复师'));
+    input.versions.push(old);
+    const r = buildDashboard(input);
+    expect(r.risks.filter((x) => x.code === 'plan-not-versioned' && x.folio_id === 'f1')).toHaveLength(0);
   });
 
   it('回归：对照图不能跳过前置流程（阶段必须连续推进）', () => {

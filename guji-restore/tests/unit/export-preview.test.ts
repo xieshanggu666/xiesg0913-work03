@@ -175,21 +175,30 @@ describe('导出预览 buildExportPreview', () => {
     expect(p.checklist.find((c) => c.code === 'plan-versions')!.status).toBe('warn');
   });
 
-  it('已存版 + 已解决批注 + 有修复后图 → 无风险', () => {
+  it('已存版（快照与当前一致）+ 已解决批注 + 有修复后图 → 无风险', () => {
     const f1 = folio('fol_1', 1, true);
     const mediaExists = new Map<string, boolean>([
       [f1.original_rel, true],
       [f1.thumb_rel, true],
       [f1.after_rel!, true]
     ]);
+    const fLayers = layersFor(f1.id);
+    const fShapes = [shape('s1', f1.id, 'damage'), shape('s2', f1.id, 'repair')];
+    const saved: PlanVersion = {
+      ...baselineVersion(f1.id),
+      id: 'v2',
+      version: 2,
+      author: '修复师',
+      snapshot: { layers: fLayers, shapes: fShapes }
+    };
     const p = buildExportPreview(
       base({
         folios: [f1],
-        layers: layersFor(f1.id),
-        shapes: [shape('s1', f1.id, 'damage'), shape('s2', f1.id, 'repair')],
+        layers: fLayers,
+        shapes: fShapes,
         steps: [step('st1', f1.id)],
         comments: [comment('c1', true)],
-        versions: [baselineVersion(f1.id), { ...baselineVersion(f1.id), id: 'v2', version: 2, author: '修复师' }],
+        versions: [baselineVersion(f1.id), saved],
         mediaExists,
         checksumMatched: new Map([[f1.id, true]])
       })
@@ -197,6 +206,54 @@ describe('导出预览 buildExportPreview', () => {
     expect(p.risks).toHaveLength(0);
     expect(p.hasWarnings).toBe(false);
     expect(p.canExport).toBe(true);
+    expect(p.folios[0].planSaved).toBe(true);
+  });
+
+  it('回归：曾人工存版但之后又改动 → 仍标“方案未保存版本”', () => {
+    const f1 = folio('fol_1', 1, true);
+    const fLayers = layersFor(f1.id);
+    const currentShapes = [shape('s1', f1.id, 'damage'), shape('s2', f1.id, 'repair')];
+    // 存版时只有 s1，之后新增了 s2 → 旧版本不代表当前方案
+    const stale: PlanVersion = {
+      ...baselineVersion(f1.id),
+      id: 'v2',
+      version: 2,
+      author: '修复师',
+      snapshot: { layers: fLayers, shapes: [currentShapes[0]] }
+    };
+    const p = buildExportPreview(
+      base({
+        folios: [f1],
+        layers: fLayers,
+        shapes: currentShapes,
+        comments: [comment('c1', true)],
+        versions: [baselineVersion(f1.id), stale]
+      })
+    );
+    const risk = p.risks.find((r) => r.code === 'plan-not-versioned');
+    expect(risk).toBeTruthy();
+    expect(risk!.detail).toContain('存版后');
+    expect(p.folios[0].planSaved).toBe(false);
+    expect(p.folios[0].hasManualVersion).toBe(true);
+    expect(p.checklist.find((c) => c.code === 'plan-versions')!.detail).toContain('又有改动');
+  });
+
+  it('回退到历史版本（当前与该快照一致）→ 视为已保存', () => {
+    const f1 = folio('fol_1', 1, true);
+    const fLayers = layersFor(f1.id);
+    const fShapes = [shape('s1', f1.id, 'damage')];
+    const old: PlanVersion = {
+      ...baselineVersion(f1.id),
+      id: 'v3',
+      version: 3,
+      author: '修复师',
+      snapshot: { layers: fLayers, shapes: fShapes }
+    };
+    const p = buildExportPreview(
+      base({ folios: [f1], layers: fLayers, shapes: fShapes, versions: [baselineVersion(f1.id), old] })
+    );
+    expect(p.risks.filter((r) => r.code === 'plan-not-versioned')).toHaveLength(0);
+    expect(p.folios[0].planSaved).toBe(true);
   });
 
   it('没有人工存版但也没有标注 → 不提示未存版', () => {

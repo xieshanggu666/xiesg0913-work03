@@ -10,6 +10,7 @@ import type {
   Shape
 } from './types.js';
 import { DAMAGE_META } from './constants.js';
+import { currentPlanIsSaved } from './plan-saved.js';
 
 /**
  * 项目进度与风险看板：纯函数推导，不新增任何存储。
@@ -62,6 +63,8 @@ export interface FolioProgress {
   stepCount: number;
   hasAfter: boolean;
   damagedAreaPx: number;
+  /** 当前方案是否已存版（与任一版本快照一致；存版后再改动则为 false） */
+  planSaved: boolean;
 }
 
 export interface DashboardTotals {
@@ -124,6 +127,7 @@ export function buildDashboard(input: DashboardInput): DashboardReport {
       const damage = shapesOf(f.id, 'damage');
       damageByFolio.set(f.id, damage);
       const repair = shapesOf(f.id, 'repair');
+      const allShapes = input.shapes.filter((s) => s.folio_id === f.id);
       const steps = stepsOf(f.id);
       const hasAfter = !!f.after_rel;
       // 阶段必须沿流水线连续推进，不得跳过前置流程：
@@ -148,7 +152,11 @@ export function buildDashboard(input: DashboardInput): DashboardReport {
         repairCount: repair.length,
         stepCount: steps.length,
         hasAfter,
-        damagedAreaPx: damage.reduce((a, s) => a + s.area_px, 0)
+        damagedAreaPx: damage.reduce((a, s) => a + s.area_px, 0),
+        planSaved: currentPlanIsSaved(
+          { layers: input.layers.filter((l) => l.folio_id === f.id), shapes: allShapes },
+          versionsOf(f.id)
+        )
       };
     });
 
@@ -244,13 +252,17 @@ export function buildDashboard(input: DashboardInput): DashboardReport {
         folio_id: fp.folio_id
       });
     }
-    const hasManualVersion = versionsOf(fp.folio_id).some((v) => v.author !== 'system');
-    if ((fp.damageCount > 0 || fp.repairCount > 0) && !hasManualVersion) {
+    // 当前方案与任一版本快照不一致才提示：不能只看“曾人工存版”，
+    // 存版之后的改动必须重新存版，否则旧版本不代表当前方案。
+    if ((fp.damageCount > 0 || fp.repairCount > 0) && !fp.planSaved) {
+      const everSaved = versionsOf(fp.folio_id).some((v) => v.author !== 'system');
       risks.push({
         level: 'low',
         code: 'plan-not-versioned',
         title: '方案未存版',
-        detail: `「${fp.name}」的标注方案尚未另存版本，误操作将不可回退。`,
+        detail: everSaved
+          ? `「${fp.name}」最近一次存版后方案又有改动，当前状态尚未另存版本，误操作将不可回退。`
+          : `「${fp.name}」的标注方案尚未另存版本，误操作将不可回退。`,
         folio_id: fp.folio_id
       });
     }

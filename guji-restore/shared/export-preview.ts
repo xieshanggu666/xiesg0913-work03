@@ -9,6 +9,7 @@ import type {
   RestorationStep,
   Shape
 } from './types.js';
+import { currentPlanIsSaved } from './plan-saved.js';
 
 /**
  * 导出预览：生成档案前的纯函数汇总（与 buildDashboard 一样不做任何落库/IO）。
@@ -56,6 +57,9 @@ export interface ExportFolioSummary {
   stepCount: number;
   /** 原始 sha256 与实测字节是否一致（未知时为 null，例如浏览器 Mock 无文件访问） */
   originalMatched: boolean | null;
+  /** 当前图层/标注方案是否已另存为版本（与任一版本快照一致；存版后再改动则为 false） */
+  planSaved: boolean;
+  /** 是否曾经人工存过版（仅用于区分“从未存版”与“存版后又改动”两种文案） */
   hasManualVersion: boolean;
 }
 
@@ -130,13 +134,13 @@ export function buildExportPreview(input: ExportPreviewInput): ExportPreview {
     (a, b) => a.sequence - b.sequence || a.name.localeCompare(b.name)
   );
 
-  const shapesOf = (folioId: ID, kind: 'damage' | 'repair') =>
-    input.shapes.filter((s) => s.folio_id === folioId && layerKind.get(s.layer_id) === kind);
   const stepsOf = (folioId: ID) => input.steps.filter((s) => s.folio_id === folioId);
   const versionsOf = (folioId: ID) => input.versions.filter((v) => v.folio_id === folioId);
 
   const folioSummaries: ExportFolioSummary[] = sortedFolios.map((f) => {
-    const hasManualVersion = versionsOf(f.id).some((v) => v.author !== 'system');
+    const fLayers = input.layers.filter((l) => l.folio_id === f.id);
+    const fShapes = input.shapes.filter((s) => s.folio_id === f.id);
+    const fVersions = versionsOf(f.id);
     return {
       folio_id: f.id,
       name: f.name,
@@ -144,11 +148,12 @@ export function buildExportPreview(input: ExportPreviewInput): ExportPreview {
       hasOriginal: exists(f.original_rel) ?? true,
       hasAfter: !!f.after_rel && exists(f.after_rel) !== false,
       hasThumb: exists(f.thumb_rel) ?? true,
-      damageCount: shapesOf(f.id, 'damage').length,
-      repairCount: shapesOf(f.id, 'repair').length,
+      damageCount: fShapes.filter((s) => layerKind.get(s.layer_id) === 'damage').length,
+      repairCount: fShapes.filter((s) => layerKind.get(s.layer_id) === 'repair').length,
       stepCount: stepsOf(f.id).length,
       originalMatched: input.checksumMatched ? (input.checksumMatched.get(f.id) ?? false) : null,
-      hasManualVersion
+      planSaved: currentPlanIsSaved({ layers: fLayers, shapes: fShapes }, fVersions),
+      hasManualVersion: fVersions.some((v) => v.author !== 'system')
     };
   });
 
@@ -190,12 +195,15 @@ export function buildExportPreview(input: ExportPreviewInput): ExportPreview {
         folio_id: f.folio_id
       });
     }
-    // 未保存方案：有标注/方案但从未人工另存版本（system 基线不算）
-    if ((f.damageCount > 0 || f.repairCount > 0) && !f.hasManualVersion) {
+    // 未保存方案：当前图层/标注与任何已存版本快照都不一致（存版后又改动也算未保存）
+    if ((f.damageCount > 0 || f.repairCount > 0) && !f.planSaved) {
+      const suffix = f.hasManualVersion
+        ? '最近一次存版后已有改动，归档后无法回退到当前方案。'
+        : '尚未另存版本，归档后无法回退到本方案。';
       risks.push({
         code: 'plan-not-versioned',
         title: '修补方案未保存版本',
-        detail: `「${f.name}」已有 ${f.damageCount + f.repairCount} 处标注/方案但未另存版本，归档后无法回退到本方案。`,
+        detail: `「${f.name}」当前有 ${f.damageCount + f.repairCount} 处标注/方案，${suffix}`,
         folio_id: f.folio_id
       });
     }
@@ -292,14 +300,24 @@ export function buildExportPreview(input: ExportPreviewInput): ExportPreview {
 
   // 8) 方案版本
   const unsaved = risks.filter((r) => r.code === 'plan-not-versioned');
+  const unsavedFolios = new Set(unsaved.map((r) => r.folio_id));
+  const changedAfterSave = folioSummaries.filter(
+    (f) => unsavedFolios.has(f.folio_id) && f.hasManualVersion
+  ).length;
+  const neverSaved = unsaved.length - changedAfterSave;
   push(
     'plan-versions',
     '方案已保存版本',
     unsaved.length ? 'warn' : 'pass',
     unsaved.length
-      ? `${unsaved.length} 叶有标注/方案但未另存版本（详见风险）。`
+      ? [
+          neverSaved > 0 ? `${neverSaved} 叶从未存版` : '',
+          changedAfterSave > 0 ? `${changedAfterSave} 叶存版后又有改动` : ''
+        ]
+          .filter(Boolean)
+          .join('；') + '（详见风险）。'
       : manualVersions > 0
-        ? `共 ${manualVersions} 个人工保存版本。`
+        ? `当前方案与已存版本一致（共 ${manualVersions} 个人工版本）。`
         : '暂无标注，无需存版。'
   );
 
